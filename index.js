@@ -128,10 +128,7 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // Se não tiver sufixo, assume Brasil (.SA) — você pode mudar isso se quiser
-    if (!ticker.includes(".")) {
-      ticker = `${ticker}.SA`;
-    }
+   
 
     const quote = await getQuoteAlphaVantage(ticker);
 

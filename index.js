@@ -9,7 +9,7 @@ app.use(express.json());
 // =======================
 // CONFIG
 // =======================
-const ALPHAVANTAGE_API_KEY = "AU7VPMLH6ZI6SVZN"; // sua key atual
+const ALPHAVANTAGE_API_KEY = "AU7VPMLH6ZI6SVZN";
 
 // =======================
 // ROTA RAIZ
@@ -41,18 +41,21 @@ async function getQuoteAlphaVantage(symbol) {
   const response = await axios.get(url, {
     params: {
       function: "GLOBAL_QUOTE",
-      symbol,
+      symbol: symbol,
       apikey: ALPHAVANTAGE_API_KEY,
     },
     timeout: 15000,
   });
 
-  // Quando estoura limite, Alpha Vantage retorna um campo tipo "Note"
-  if (response.data?.Note) {
-    return { rateLimited: true, note: response.data.Note };
+  console.log("Alpha raw:", JSON.stringify(response.data));
+
+  // Rate limit
+  if (response.data?.Note || response.data?.Information) {
+    return { rateLimited: true };
   }
 
-  const q = response.data?.["Global Quote"];
+  const q = response.data["Global Quote"];
+
   if (!q || !q["05. price"]) return null;
 
   return {
@@ -98,7 +101,6 @@ async function sendWhatsAppMessage(to, text) {
 // WEBHOOK POST (receber mensagens)
 // =======================
 app.post("/webhook", async (req, res) => {
-  // Responde rápido pra Meta não dar timeout
   res.sendStatus(200);
 
   try {
@@ -109,7 +111,7 @@ app.post("/webhook", async (req, res) => {
     const msg = value?.messages?.[0];
     if (!msg || msg.type !== "text") return;
 
-    const from = msg.from; // wa_id do usuário
+    const from = msg.from;
     const text = msg?.text?.body?.trim();
 
     console.log("Mensagem recebida:", JSON.stringify(req.body, null, 2));
@@ -122,26 +124,28 @@ app.post("/webhook", async (req, res) => {
     // Normalização do ticker
     let ticker = text.toUpperCase().trim();
 
-    // valida formato simples
     if (!/^[A-Z0-9.]{2,15}$/.test(ticker)) {
-      await sendWhatsAppMessage(from, "Envie só o ticker. Ex: PETR4 ou AAPL");
+      await sendWhatsAppMessage(from, "Envie apenas o ticker. Ex: PETR4 ou AAPL");
       return;
     }
 
-   
+    // 🔑 REGRA IMPORTANTE: se não tiver sufixo, assume B3 (.SA)
+    if (!ticker.includes(".")) {
+      ticker = ticker + ".SA";
+    }
 
     const quote = await getQuoteAlphaVantage(ticker);
 
-    if (!quote) {
-      await sendWhatsAppMessage(from, `Não encontrei cotação para ${ticker}.`);
+    if (quote?.rateLimited) {
+      await sendWhatsAppMessage(
+        from,
+        "Limite da Alpha Vantage atingido (5/min). Aguarde 1 minuto e tente novamente."
+      );
       return;
     }
 
-    if (quote.rateLimited) {
-      await sendWhatsAppMessage(
-        from,
-        "Limite de consultas da Alpha Vantage atingido (5/min). Tente de novo em 1 minuto."
-      );
+    if (!quote) {
+      await sendWhatsAppMessage(from, `Não encontrei cotação para ${ticker}.`);
       return;
     }
 

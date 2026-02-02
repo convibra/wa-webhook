@@ -7,11 +7,6 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 
 // =======================
-// CONFIG
-// =======================
-const ALPHAVANTAGE_API_KEY = "AU7VPMLH6ZI6SVZN"; // sua key atual
-
-// =======================
 // ROTA RAIZ
 // =======================
 app.get("/", (req, res) => {
@@ -33,42 +28,29 @@ app.get("/webhook", (req, res) => {
 });
 
 // =======================
-// ALPHA VANTAGE: cotação
+// BRAPI (sem token): cotação
 // =======================
-async function getQuoteAlphaVantage(symbol) {
-  const url = "https://www.alphavantage.co/query";
+async function getQuoteBrapi(tickerRaw) {
+  const ticker = (tickerRaw || "").trim().toUpperCase();
+  if (!ticker) return null;
 
-  const response = await axios.get(url, {
-    params: {
-      function: "GLOBAL_QUOTE",
-      symbol: symbol,
-      apikey: ALPHAVANTAGE_API_KEY,
-    },
+  const url = `https://brapi.dev/api/quote/${encodeURIComponent(ticker)}`;
+
+  const resp = await axios.get(url, {
     timeout: 15000,
+    headers: { Accept: "application/json" },
   });
 
-  console.log("Alpha raw:", JSON.stringify(response.data));
-
-  const note = response.data?.Note;
-  const info = response.data?.Information;
-
-  if (note) {
-    return { errorType: "note", message: note };
-  }
-
-  if (info) {
-    return { errorType: "information", message: info };
-  }
-
-  const q = response.data["Global Quote"];
-
-  if (!q || !q["05. price"]) return null;
+  const item = resp.data?.results?.[0];
+  if (!item || item.regularMarketPrice == null) return null;
 
   return {
-    symbol: q["01. symbol"],
-    price: q["05. price"],
-    change: q["09. change"],
-    changePercent: q["10. change percent"],
+    symbol: item.symbol,
+    name: item.shortName || item.longName || item.symbol,
+    price: item.regularMarketPrice,
+    change: item.regularMarketChange,
+    changePercent: item.regularMarketChangePercent,
+    currency: item.currency || "BRL",
   };
 }
 
@@ -80,7 +62,7 @@ async function sendWhatsAppMessage(to, text) {
   const token = process.env.WA_TOKEN;
 
   if (!phoneNumberId || !token) {
-    throw new Error("Faltou WA_PHONE_NUMBER_ID ou WA_TOKEN nas variáveis do Render.");
+    throw new Error("Faltou WA_PHONE_NUMBER_ID ou WA_TOKEN no Render.");
   }
 
   const url = `https://graph.facebook.com/v22.0/${phoneNumberId}/messages`;
@@ -107,68 +89,48 @@ async function sendWhatsAppMessage(to, text) {
 // WEBHOOK POST (receber mensagens)
 // =======================
 app.post("/webhook", async (req, res) => {
-  // responde rápido pra Meta
+  // responde rápido pra Meta não dar timeout
   res.sendStatus(200);
 
   try {
-    const entry = req.body?.entry?.[0];
-    const change = entry?.changes?.[0];
-    const value = change?.value;
-
+    const value = req.body?.entry?.[0]?.changes?.[0]?.value;
     const msg = value?.messages?.[0];
+
     if (!msg || msg.type !== "text") return;
 
-    const from = msg.from;
+    const from = msg.from; // wa_id
     const text = msg?.text?.body?.trim();
 
-    console.log("Mensagem recebida:", JSON.stringify(req.body, null, 2));
-
     if (!text) {
-      await sendWhatsAppMessage(from, "Envie um ticker. Ex: PETR4 ou AAPL");
+      await sendWhatsAppMessage(from, "Envie um ticker. Ex: PETR4, VALE3, ITUB4.");
       return;
     }
 
-    // Normalização do ticker
     let ticker = text.toUpperCase().trim();
 
-    if (!/^[A-Z0-9.]{2,15}$/.test(ticker)) {
-      await sendWhatsAppMessage(from, "Envie apenas o ticker. Ex: PETR4 ou AAPL");
+    // aceita só ticker básico (sem espaços)
+    if (!/^[A-Z0-9]{3,10}$/.test(ticker)) {
+      await sendWhatsAppMessage(from, "Envie só o ticker (sem espaços). Ex: PETR4");
       return;
     }
 
-    // Se não tiver sufixo, assume B3 (.SA)
-    if (!ticker.includes(".")) {
-      ticker = ticker + ".SA";
-    }
-
-    const quote = await getQuoteAlphaVantage(ticker);
-
-    if (quote?.errorType === "note") {
-      await sendWhatsAppMessage(
-        from,
-        "Alpha Vantage informou limite temporário. Aguarde cerca de 1 minuto e tente novamente."
-      );
-      return;
-    }
-
-    if (quote?.errorType === "information") {
-      await sendWhatsAppMessage(
-        from,
-        `Alpha Vantage retornou: ${quote.message}`
-      );
-      return;
-    }
+    const quote = await getQuoteBrapi(ticker);
 
     if (!quote) {
-      await sendWhatsAppMessage(from, `Não encontrei cotação para ${ticker}.`);
+      await sendWhatsAppMessage(from, `Não encontrei cotação para ${ticker} na brapi.dev.`);
       return;
     }
+
+    const chg = quote.change != null ? Number(quote.change).toFixed(2) : "0.00";
+    const chgPct =
+      quote.changePercent != null ? Number(quote.changePercent).toFixed(2) : "0.00";
 
     const reply =
       `📈 Cotação\n` +
       `Ticker: ${quote.symbol}\n` +
-      `Preço: ${quote.price}\n` +
-      `Variação: ${quote.change} (${quote.changePercent})`;
+      `Ativo: ${quote.name}\n` +
+      `Preço: ${quote.price} ${quote.currency}\n` +
+      `Variação: ${chg} (${chgPct}%)`;
 
     await sendWhatsAppMessage(from, reply);
   } catch (err) {

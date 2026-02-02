@@ -9,7 +9,7 @@ app.use(express.json());
 // =======================
 // CONFIG
 // =======================
-const ALPHAVANTAGE_API_KEY = "AU7VPMLH6ZI6SVZN";
+const ALPHAVANTAGE_API_KEY = "AU7VPMLH6ZI6SVZN"; // sua key atual
 
 // =======================
 // ROTA RAIZ
@@ -49,9 +49,15 @@ async function getQuoteAlphaVantage(symbol) {
 
   console.log("Alpha raw:", JSON.stringify(response.data));
 
-  // Rate limit
-  if (response.data?.Note || response.data?.Information) {
-    return { rateLimited: true };
+  const note = response.data?.Note;
+  const info = response.data?.Information;
+
+  if (note) {
+    return { errorType: "note", message: note };
+  }
+
+  if (info) {
+    return { errorType: "information", message: info };
   }
 
   const q = response.data["Global Quote"];
@@ -101,6 +107,7 @@ async function sendWhatsAppMessage(to, text) {
 // WEBHOOK POST (receber mensagens)
 // =======================
 app.post("/webhook", async (req, res) => {
+  // responde rápido pra Meta
   res.sendStatus(200);
 
   try {
@@ -129,17 +136,25 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // 🔑 REGRA IMPORTANTE: se não tiver sufixo, assume B3 (.SA)
+    // Se não tiver sufixo, assume B3 (.SA)
     if (!ticker.includes(".")) {
       ticker = ticker + ".SA";
     }
 
     const quote = await getQuoteAlphaVantage(ticker);
 
-    if (quote?.rateLimited) {
+    if (quote?.errorType === "note") {
       await sendWhatsAppMessage(
         from,
-        "Limite da Alpha Vantage atingido (5/min). Aguarde 1 minuto e tente novamente."
+        "Alpha Vantage informou limite temporário. Aguarde cerca de 1 minuto e tente novamente."
+      );
+      return;
+    }
+
+    if (quote?.errorType === "information") {
+      await sendWhatsAppMessage(
+        from,
+        `Alpha Vantage retornou: ${quote.message}`
       );
       return;
     }
